@@ -1,0 +1,28 @@
+[workspace.package]
+license = "MIT-0"
+authors = ["Parity Technologies <admin@parity.io>"]
+homepage = "https://substrate.io"
+repository = "https://github.com/paritytech/polkadot-sdk-minimal-template.git"
+edition = "2021"
+
+[workspace]
+members = [
+	"pallets/htlc",
+	"runtime",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# base deps
+parity-scale-codec = { version = "3.0.0", default-features = false }
+scale-info = { version = "2.6.0", default-features = false }
+
+# primitives
+sp-runtime = { version = "40.1.0", default-features = false, features = [
+	"serde",
+] }
+
+pallet-balances = { version = "40.0.1", default-features = false }
+pallet-sudo = { version = "39.0.0", default-features = false }
+pallet-transaction-payment = { version = "39.0.0", default-features = false }
+pallet-transaction-payment-rpc-runtime-api = { version = "39.0.0", default-features = false }
