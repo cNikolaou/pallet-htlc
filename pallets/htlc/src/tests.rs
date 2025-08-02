@@ -209,6 +209,12 @@ fn withdraw_success_with_valid_secret() {
 		let stored_htlc = Htlcs::<Test>::get(&htlc_id).expect("HTLC id is contained; qed");
 		assert_eq!(stored_htlc.status, HtlcStatus::Completed);
 
+		// cannot `withdraw` again
+		assert_noop!(
+			HtlcEscrow::withdraw(RuntimeOrigin::signed(taker), immutables.clone(), secret.to_vec(),),
+			Error::<Test>::HtlcNotActive
+		);
+
 		// verify deposited event
 		System::assert_last_event(
 			Event::HtlcWithdrawn {
@@ -349,6 +355,16 @@ fn public_withdraw_success_by_third_party() {
 		let stored_htlc = Htlcs::<Test>::get(&htlc_id).expect("HTLC id is contained; qed");
 		assert_eq!(stored_htlc.status, HtlcStatus::Completed);
 
+		// cannot `public_withdraw` again
+		assert_noop!(
+			HtlcEscrow::public_withdraw(
+				RuntimeOrigin::signed(third_party),
+				immutables.clone(),
+				secret.to_vec(),
+			),
+			Error::<Test>::HtlcNotActive
+		);
+
 		// verify deposited event that mentions the `third_party` as the
 		// recipient for the safety deposit
 		System::assert_last_event(
@@ -472,6 +488,12 @@ fn create_htlc_and_cancel_it() {
 
 		let stored_htlc = Htlcs::<Test>::get(&htlc_id).expect("HTLC id is contained; qed");
 		assert_eq!(stored_htlc.status, HtlcStatus::Cancelled);
+
+		// cannot `withdraw` after cancellation
+		assert_noop!(
+			HtlcEscrow::withdraw(RuntimeOrigin::signed(taker), immutables.clone(), secret.to_vec(),),
+			Error::<Test>::HtlcNotActive
+		);
 
 		// verify deposited event
 		System::assert_last_event(Event::HtlcCancelled { htlc_id, refund_recipient: taker }.into());
