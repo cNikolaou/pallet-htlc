@@ -12,14 +12,31 @@ use sp_runtime::{
 type Block = frame_system::mocking::MockBlock<Test>;
 type Balance = u128;
 
-// Configure a mock runtime to test the pallet.
-frame_support::construct_runtime!(
-	pub enum Test {
-		System: frame_system,
-		Balances: pallet_balances,
-		Htlc: pallet_htlc,
-	}
-);
+// Configure a mock runtime to test the pallet. We use the simpler syntax here.
+#[frame_support::runtime]
+mod runtime {
+	#[runtime::derive(
+		RuntimeCall,
+		RuntimeEvent,
+		RuntimeError,
+		RuntimeOrigin,
+		RuntimeTask,
+		RuntimeHoldReason,
+		RuntimeFreezeReason
+	)]
+	#[runtime::runtime]
+	/// The test runtime which represents the state transition function for the blockchain.
+	pub struct Test;
+
+	#[runtime::pallet_index(0)]
+	pub type System = frame_system;
+
+	#[runtime::pallet_index(1)]
+	pub type Balances = pallet_balances;
+
+	#[runtime::pallet_index(2)]
+	pub type HtlcEscrow = pallet_htlc;
+}
 
 #[derive_impl(frame_system::config_preludes::TestDefaultConfig)]
 impl frame_system::Config for Test {
@@ -59,7 +76,7 @@ impl pallet_balances::Config for Test {
 	type MaxLocks = ConstU32<10>;
 	type MaxReserves = ();
 	type ReserveIdentifier = [u8; 8];
-	type RuntimeHoldReason = ();
+	type RuntimeHoldReason = RuntimeHoldReason;
 	type FreezeIdentifier = ();
 	type MaxFreezes = ConstU32<10>;
 }
@@ -68,8 +85,17 @@ impl pallet_htlc::Config for Test {
 	type RuntimeEvent = RuntimeEvent;
 	type NativeBalance = Balances;
 	type RuntimeCall = RuntimeCall;
+	type RuntimeHoldReason = RuntimeHoldReason;
 }
 
 pub fn new_test_ext() -> sp_io::TestExternalities {
-	frame_system::GenesisConfig::<Test>::default().build_storage().unwrap().into()
+	let mut t = frame_system::GenesisConfig::<Test>::default().build_storage().unwrap();
+
+	pallet_balances::GenesisConfig::<Test> {
+		balances: vec![(1, 1000000), (2, 1000000), (3, 1000000)],
+	}
+	.assimilate_storage(&mut t)
+	.unwrap();
+
+	t.into()
 }
