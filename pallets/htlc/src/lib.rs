@@ -180,19 +180,23 @@ pub mod pallet {
 		InsufficientBalance,
 
 		/// The withdrawal was attempted too early and it's not allowed
-		/// based on the current configured timelock.
+		/// based on the current timelock configuration.
 		EarlyWithdrawal,
 
 		/// The public withdrawal was attempted too early and it's not allowed
-		/// based on the current configured timelock.
+		/// based on the current timelock configuration.
 		EarlyPublicWithdrawal,
 
+		/// The cancellation was attempted too early and it's not allowed
+		/// based on the current timelock configuration.
+		EarlyCancellation,
+
 		/// The withdrawal was attempted too late and it's not allowed
-		/// based on the current configured timelock.
+		/// based on the current timelock configuration.
 		LateWithdrawal,
 
 		/// The public withdrawal was attempted too late and it's not allowed
-		/// based on the current configured timelock.
+		/// based on the current timelock configuration.
 		LatePublicWithdrawal,
 
 		/// HTLC already exists.
@@ -436,6 +440,66 @@ pub mod pallet {
 				beneficiary: htlc.immutables.maker,
 				safety_deposit_recipient: who,
 			});
+
+			Ok(())
+		}
+
+		#[pallet::call_index(3)]
+		pub fn cancel(
+			origin: OriginFor<T>,
+			immutables: Immutables<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			// Validation phase
+
+			// validate HTLC exists
+			let htlc_id = Self::hash_immutables(&immutables);
+			let mut htlc = Htlcs::<T>::get(&htlc_id).ok_or(Error::<T>::HtlcDoesNotExist)?;
+			ensure!(htlc.status == HtlcStatus::Active, Error::<T>::HtlcNotActive);
+
+			// verify immutables match
+			ensure!(htlc.immutables == immutables, Error::<T>::InvalidImmutables);
+
+			// Verify taker is not the caller of the external; anyone else
+			// can call this function. The check here is not as important as
+			// the check of the complementary condition in the `withdraw`
+			// function.
+			ensure!(who == htlc.immutables.taker, Error::<T>::InvalidCaller);
+
+			// check the timing is valid for the public withdrawal
+			let current_block = frame_system::Pallet::<T>::block_number();
+			ensure!(
+				current_block >= htlc.immutables.timelocks.cancellation_after,
+				Error::<T>::EarlyCancellation
+			);
+
+			// Withdrawal phase
+
+			// release & transfer swap amount to maker
+			T::NativeBalance::release(
+				&HoldReason::SwapAmount.into(),
+				&htlc.immutables.taker,
+				htlc.immutables.amount,
+				Precision::Exact,
+			)?;
+
+			// release safety deposit to the take
+			T::NativeBalance::release(
+				&HoldReason::SafetyDeposit.into(),
+				&htlc.immutables.taker,
+				htlc.immutables.safety_deposit,
+				Precision::Exact,
+			)?;
+
+			// update HTLC
+			htlc.status = HtlcStatus::Cancelled;
+			Htlcs::<T>::insert(&htlc_id, &htlc);
+
+			ReservedDeposits::<T>::remove((&htlc.immutables.taker, &htlc_id));
+
+			// emit event that shows the unhashed secret to the public
+			Self::deposit_event(Event::HtlcCancelled { htlc_id, refund_recipient: who });
 
 			Ok(())
 		}
