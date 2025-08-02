@@ -16,7 +16,11 @@ pub mod pallet {
 	use frame_support::{
 		dispatch::{GetDispatchInfo, RawOrigin},
 		pallet_prelude::*,
-		traits::{fungible, fungible::MutateHold},
+		traits::{
+			fungible,
+			fungible::{Mutate, MutateHold},
+			tokens::{Precision, Preservation},
+		},
 	};
 	use frame_system::pallet_prelude::*;
 	use sp_core::H256;
@@ -144,7 +148,13 @@ pub mod pallet {
 			amount: BalanceOf<T>,
 		},
 		/// HTLC withdrawn.
-		HtlcWithdrawn { htlc_id: H256, secret: H256, beneficiary: T::AccountId },
+		HtlcWithdrawn {
+			htlc_id: H256,
+			secret: Vec<u8>,
+			amount: BalanceOf<T>,
+			beneficiary: T::AccountId,
+			safety_deposit_recipient: T::AccountId,
+		},
 		/// HTLC cancelled.
 		HtlcCancelled { htlc_id: H256, refund_recipient: T::AccountId },
 	}
@@ -153,18 +163,51 @@ pub mod pallet {
 	pub enum Error<T> {
 		/// Error name example. Should be descriptive.
 		NoneValue,
+
 		/// Invalid caller for the operation.
 		InvalidCaller,
+
 		/// Invalid timelock configuration.
 		InvalidTimelocks,
-		/// HTLC already exists.
-		HtlcAlreadyExists,
+
+		/// The provided immutables do not match the ones stored.
+		InvalidImmutables,
+
+		/// The hash of the provided secret does not match the hashlock of the contract.
+		InvalidSecret,
+
 		/// Cannot lock funds as the caller has insufficient balance.
 		InsufficientBalance,
+
+		/// The withdrawal was attempted too early and it's not allowed
+		/// based on the current configured timelock.
+		EarlyWithdrawal,
+
+		/// The public withdrawal was attempted too early and it's not allowed
+		/// based on the current configured timelock.
+		EarlyPublicWithdrawal,
+
+		/// The withdrawal was attempted too late and it's not allowed
+		/// based on the current configured timelock.
+		LateWithdrawal,
+
+		/// The public withdrawal was attempted too late and it's not allowed
+		/// based on the current configured timelock.
+		LatePublicWithdrawal,
+
+		/// HTLC already exists.
+		HtlcAlreadyExists,
+
+		/// HTLC does not exists.
+		HtlcDoesNotExist,
+
+		/// HTLC is not active.
+		HtlcNotActive,
 	}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
+		#[pallet::call_index(0)]
 		pub fn create_dst_htlc(
 			origin: OriginFor<T>,
 			immutables: Immutables<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
@@ -229,30 +272,172 @@ pub mod pallet {
 			Ok(())
 		}
 
-		pub fn store_something(origin: OriginFor<T>, something: u32) -> DispatchResult {
-			// Check that the extrinsic was signed and get the signer.
-			// Returns an error if the extrinsic is not signed.
+		#[pallet::call_index(1)]
+		pub fn withdraw(
+			origin: OriginFor<T>,
+			immutables: Immutables<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
+			secret: Vec<u8>,
+		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 
-			// Update storage.
-			<Something<T>>::put(something);
+			// Validation phase
 
-			// Emit an event.
-			Self::deposit_event(Event::SomethingStored { something, who });
+			// validate HTLC exists
+			let htlc_id = Self::hash_immutables(&immutables);
+			let mut htlc = Htlcs::<T>::get(&htlc_id).ok_or(Error::<T>::HtlcDoesNotExist)?;
+			ensure!(htlc.status == HtlcStatus::Active, Error::<T>::HtlcNotActive);
+
+			// verify immutables match
+			ensure!(htlc.immutables == immutables, Error::<T>::InvalidImmutables);
+
+			// verify secret hash matches the one stored in the lock
+			let secret_hash = BlakeTwo256::hash(&secret);
+			ensure!(htlc.immutables.hashlock == secret_hash, Error::<T>::InvalidSecret);
+
+			// verify taker is the caller of the external
+			ensure!(who == htlc.immutables.taker, Error::<T>::InvalidCaller);
+
+			// check the timing is valid for the withdrawal
+			let current_block = frame_system::Pallet::<T>::block_number();
+			ensure!(
+				current_block >= htlc.immutables.timelocks.withdrawal_after,
+				Error::<T>::EarlyWithdrawal
+			);
+			ensure!(
+				current_block < htlc.immutables.timelocks.cancellation_after,
+				Error::<T>::LateWithdrawal
+			);
+
+			// Withdrawal phase
+
+			// release & transfer swap amount to maker
+			T::NativeBalance::release(
+				&HoldReason::SwapAmount.into(),
+				&htlc.immutables.taker,
+				htlc.immutables.amount,
+				Precision::Exact,
+			)?;
+
+			T::NativeBalance::transfer(
+				&htlc.immutables.taker,
+				&htlc.immutables.maker,
+				htlc.immutables.amount,
+				Preservation::Preserve,
+			)?;
+
+			// release safety deposit to the take
+			T::NativeBalance::release(
+				&HoldReason::SafetyDeposit.into(),
+				&htlc.immutables.taker,
+				htlc.immutables.safety_deposit,
+				Precision::Exact,
+			)?;
+
+			// update HTLC
+			htlc.status = HtlcStatus::Completed;
+			Htlcs::<T>::insert(&htlc_id, &htlc);
+
+			ReservedDeposits::<T>::remove((&htlc.immutables.taker, &htlc_id));
+
+			// emit event that shows the unhashed secret to the public
+			Self::deposit_event(Event::HtlcWithdrawn {
+				htlc_id,
+				secret,
+				amount: immutables.amount,
+				beneficiary: htlc.immutables.maker,
+				safety_deposit_recipient: who,
+			});
 
 			Ok(())
 		}
 
-		/// An example dispatchable that may throw a custom error.
-		pub fn retrieve_something(origin: OriginFor<T>) -> DispatchResult {
-			let _who = ensure_signed(origin)?;
+		#[pallet::call_index(2)]
+		pub fn public_withdraw(
+			origin: OriginFor<T>,
+			immutables: Immutables<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
+			secret: Vec<u8>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
 
-			// Read a value from storage.
-			match <Something<T>>::get() {
-				// Return an error if the value has not been set.
-				None => Err(Error::<T>::NoneValue.into()),
-				Some(_value) => Ok(()),
-			}
+			// Validation phase
+
+			// validate HTLC exists
+			let htlc_id = Self::hash_immutables(&immutables);
+			let mut htlc = Htlcs::<T>::get(&htlc_id).ok_or(Error::<T>::HtlcDoesNotExist)?;
+			ensure!(htlc.status == HtlcStatus::Active, Error::<T>::HtlcNotActive);
+
+			// verify immutables match
+			ensure!(htlc.immutables == immutables, Error::<T>::InvalidImmutables);
+
+			// verify secret hash matches the one stored in the lock
+			let secret_hash = BlakeTwo256::hash(&secret);
+			ensure!(htlc.immutables.hashlock == secret_hash, Error::<T>::InvalidSecret);
+
+			// Verify taker is not the caller of the external; anyone else
+			// can call this function. The check here is not as important as
+			// the check of the complementary condition in the `withdraw`
+			// function.
+			ensure!(who != htlc.immutables.taker, Error::<T>::InvalidCaller);
+
+			// check the timing is valid for the public withdrawal
+			let current_block = frame_system::Pallet::<T>::block_number();
+			ensure!(
+				current_block >= htlc.immutables.timelocks.public_withdrawal_after,
+				Error::<T>::EarlyPublicWithdrawal
+			);
+			ensure!(
+				current_block < htlc.immutables.timelocks.cancellation_after,
+				Error::<T>::LatePublicWithdrawal
+			);
+
+			// Withdrawal phase
+
+			// release & transfer swap amount to maker
+			T::NativeBalance::release(
+				&HoldReason::SwapAmount.into(),
+				&htlc.immutables.taker,
+				htlc.immutables.amount,
+				Precision::Exact,
+			)?;
+
+			T::NativeBalance::transfer(
+				&htlc.immutables.taker,
+				&htlc.immutables.maker,
+				htlc.immutables.amount,
+				Preservation::Preserve,
+			)?;
+
+			// release safety deposit to the take
+			T::NativeBalance::release(
+				&HoldReason::SafetyDeposit.into(),
+				&htlc.immutables.taker,
+				htlc.immutables.safety_deposit,
+				Precision::Exact,
+			)?;
+
+			T::NativeBalance::transfer(
+				&htlc.immutables.taker,
+				&who,
+				htlc.immutables.safety_deposit,
+				Preservation::Preserve,
+			)?;
+
+			// update HTLC
+			htlc.status = HtlcStatus::Completed;
+			Htlcs::<T>::insert(&htlc_id, &htlc);
+
+			ReservedDeposits::<T>::remove((&htlc.immutables.taker, &htlc_id));
+
+			// emit event that shows the unhashed secret to the public
+			Self::deposit_event(Event::HtlcWithdrawn {
+				htlc_id,
+				secret,
+				amount: immutables.amount,
+				beneficiary: htlc.immutables.maker,
+				safety_deposit_recipient: who,
+			});
+
+			Ok(())
 		}
 	}
 
