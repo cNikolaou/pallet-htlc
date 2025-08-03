@@ -100,7 +100,7 @@ See for example the:
 #[pallet::constant]
 type MinSafetyDeposit: Get<BalanceOf<Self>>;
 ```
-s
+
 **Allow only KYC resolver**: Anyone is allowed to call the functions that
 the pallet provides without validating whether a resolver has a successfully
 passed a KYC. This can be implemented by gating the resolver-specific functions
@@ -116,3 +116,52 @@ storage more expensive to run for the users of the `pallet-htlc`.
 are currently stored on-chain. We want to store only the `nonces` and the
 hashes of the the `SwapIntent`s that have already been submitted (to avoid
 repeated submissions of the same `SwapIntent`s and provide deduplication).
+
+**Missing public cancel on SRC**: On the source chain, there should be a
+way for the maker or other resolvers to call the a function like the
+`cancel` function (called `public_cancel`) to cancel the HTLC in case
+the original resolver has not completed the withdrawal after after
+the elapse of the `cancellation_after` block.
+
+### Cross-chain demo
+
+The current implementation is extensively tested for the current logic. Both
+the success cases and the error cases are tested for the various use cases.
+
+However, apart from the improvements mentioned above, it is necessary to
+test cross chain swaps between EVM chains and Substrate chains in a
+local environment as well.
+
+For that we need to run the runtime of a Substrate-based chain that
+includes `pallet-htlc` with the [Omni Node](https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/omni_node/index.html).
+
+To do that we will need to:
+
+- Install `polkadot-omni-node`: `cargo install polkadot-omni-node`
+- Install `staging-chain-spec-builder`: `cargo install staging-chain-spec-builder`
+- Compile the runtime that includes the `pallet-htlc` from the repo root: `cargo build -p minimal-template-runtime --release`
+- Create a chain spec:
+
+```
+chain-spec-builder create --relay-chain "dev" --para-id 1000 --runtime \
+    target/release/wbuild/minimal-template-runtime/minimal_template_runtime.wasm named-preset development
+```
+
+And then run the omni node with the generated chain spec.
+
+```
+polkadot-omni-node --chain ./chain_spec.json --dev
+```
+
+Similar to [`cross-chain-resolver-example`](),
+a relayer and resolver can be implemented to facilitate swaps between an EVM
+chain that runs with [Anvil](https://getfoundry.sh/anvil/overview/)
+and the local Polkadot chain tha runs with the Omni Node.
+
+The [Polkadot API](https://papi.how/) can be used to:
+- Listen to `SwapIntent` events on the local Polkadot chain and the create `EscrowDst` contracts on the EVM chain.
+- Call the `create_src_htlc` from `pallet-htlc`.
+- Then, when both functions are called and successful the maker can reveal the secret (though some local API) and both `withdraw` functions will be called.
+
+The relayer/resolver will also listen to swap intent events on the EVM chain and call the `create_dst_htlc` after.
+Then the process to withdraw and/or cancel is as before.
