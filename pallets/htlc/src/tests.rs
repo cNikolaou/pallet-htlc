@@ -187,7 +187,11 @@ fn withdraw_success_with_valid_secret() {
 
 		// attempt early withdrawal by `taker` should fail
 		assert_noop!(
-			HtlcEscrow::withdraw(RuntimeOrigin::signed(taker), immutables.clone(), secret.to_vec(),),
+			HtlcEscrow::src_withdraw(
+				RuntimeOrigin::signed(taker),
+				immutables.clone(),
+				secret.to_vec(),
+			),
 			Error::<Test>::EarlyWithdrawal,
 		);
 
@@ -195,7 +199,7 @@ fn withdraw_success_with_valid_secret() {
 		let after_withdrawal_block = immutables.timelocks.withdrawal_after + 10;
 		System::set_block_number(after_withdrawal_block);
 
-		assert_ok!(HtlcEscrow::withdraw(
+		assert_ok!(HtlcEscrow::src_withdraw(
 			RuntimeOrigin::signed(taker),
 			immutables.clone(),
 			secret.to_vec(),
@@ -211,7 +215,11 @@ fn withdraw_success_with_valid_secret() {
 
 		// cannot `withdraw` again
 		assert_noop!(
-			HtlcEscrow::withdraw(RuntimeOrigin::signed(taker), immutables.clone(), secret.to_vec(),),
+			HtlcEscrow::src_withdraw(
+				RuntimeOrigin::signed(taker),
+				immutables.clone(),
+				secret.to_vec(),
+			),
 			Error::<Test>::HtlcNotActive
 		);
 
@@ -300,7 +308,7 @@ fn public_withdraw_success_by_third_party() {
 
 		// attempt early public withdrawal by `third_party` should fail
 		assert_noop!(
-			HtlcEscrow::public_withdraw(
+			HtlcEscrow::src_public_withdraw(
 				RuntimeOrigin::signed(third_party),
 				immutables.clone(),
 				secret.to_vec(),
@@ -315,7 +323,7 @@ fn public_withdraw_success_by_third_party() {
 		// attempt early withdrawal by `third_party` should still fail;
 		// the `third_party` hasn't waited enough
 		assert_noop!(
-			HtlcEscrow::public_withdraw(
+			HtlcEscrow::src_public_withdraw(
 				RuntimeOrigin::signed(third_party),
 				immutables.clone(),
 				secret.to_vec(),
@@ -326,7 +334,7 @@ fn public_withdraw_success_by_third_party() {
 		// `third_party` calls the `withdraw` and fails; only the taker
 		// can call that
 		assert_noop!(
-			HtlcEscrow::withdraw(
+			HtlcEscrow::src_withdraw(
 				RuntimeOrigin::signed(third_party),
 				immutables.clone(),
 				secret.to_vec(),
@@ -339,7 +347,7 @@ fn public_withdraw_success_by_third_party() {
 		System::set_block_number(after_public_withdrawal_block);
 
 		// third_party calls the `public_withdraw`
-		assert_ok!(HtlcEscrow::public_withdraw(
+		assert_ok!(HtlcEscrow::src_public_withdraw(
 			RuntimeOrigin::signed(third_party),
 			immutables.clone(),
 			secret.to_vec(),
@@ -357,7 +365,7 @@ fn public_withdraw_success_by_third_party() {
 
 		// cannot `public_withdraw` again
 		assert_noop!(
-			HtlcEscrow::public_withdraw(
+			HtlcEscrow::src_public_withdraw(
 				RuntimeOrigin::signed(third_party),
 				immutables.clone(),
 				secret.to_vec(),
@@ -449,7 +457,7 @@ fn create_htlc_and_cancel_it() {
 
 		// attempt early cancellation by `taker` should fail
 		assert_noop!(
-			HtlcEscrow::cancel(RuntimeOrigin::signed(taker), immutables.clone()),
+			HtlcEscrow::src_cancel(RuntimeOrigin::signed(taker), immutables.clone()),
 			Error::<Test>::EarlyCancellation,
 		);
 
@@ -459,7 +467,7 @@ fn create_htlc_and_cancel_it() {
 
 		// cancellation by `taker` should fail; still too early to cancel
 		assert_noop!(
-			HtlcEscrow::cancel(RuntimeOrigin::signed(taker), immutables.clone()),
+			HtlcEscrow::src_cancel(RuntimeOrigin::signed(taker), immutables.clone()),
 			Error::<Test>::EarlyCancellation,
 		);
 
@@ -469,7 +477,7 @@ fn create_htlc_and_cancel_it() {
 
 		// cancellation by `taker` should fail; still too early to cancel
 		assert_noop!(
-			HtlcEscrow::cancel(RuntimeOrigin::signed(taker), immutables.clone()),
+			HtlcEscrow::src_cancel(RuntimeOrigin::signed(taker), immutables.clone()),
 			Error::<Test>::EarlyCancellation,
 		);
 
@@ -478,7 +486,7 @@ fn create_htlc_and_cancel_it() {
 		System::set_block_number(after_cancellation_block);
 
 		// cancellation by `taker` should fail; still too early to cancel
-		assert_ok!(HtlcEscrow::cancel(RuntimeOrigin::signed(taker), immutables.clone()));
+		assert_ok!(HtlcEscrow::src_cancel(RuntimeOrigin::signed(taker), immutables.clone()));
 
 		// `maker` should still have the same balance as before; no swap occurred
 		// `taker` should still have the same balance as before; no swap occurred
@@ -491,7 +499,11 @@ fn create_htlc_and_cancel_it() {
 
 		// cannot `withdraw` after cancellation
 		assert_noop!(
-			HtlcEscrow::withdraw(RuntimeOrigin::signed(taker), immutables.clone(), secret.to_vec(),),
+			HtlcEscrow::src_withdraw(
+				RuntimeOrigin::signed(taker),
+				immutables.clone(),
+				secret.to_vec(),
+			),
 			Error::<Test>::HtlcNotActive
 		);
 

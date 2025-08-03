@@ -277,7 +277,7 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(1)]
-		pub fn withdraw(
+		pub fn src_withdraw(
 			origin: OriginFor<T>,
 			immutables: Immutables<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
 			secret: Vec<u8>,
@@ -356,7 +356,7 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(2)]
-		pub fn public_withdraw(
+		pub fn src_public_withdraw(
 			origin: OriginFor<T>,
 			immutables: Immutables<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
 			secret: Vec<u8>,
@@ -445,7 +445,7 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(3)]
-		pub fn cancel(
+		pub fn src_cancel(
 			origin: OriginFor<T>,
 			immutables: Immutables<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
 		) -> DispatchResult {
