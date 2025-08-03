@@ -136,15 +136,6 @@ pub mod pallet {
 		OptionQuery,
 	>;
 
-	#[pallet::storage]
-	pub type ReservedDeposits<T: Config> = StorageMap<
-		_,
-		Blake2_128Concat,
-		(T::AccountId, H256),
-		(BalanceOf<T>, BalanceOf<T>),
-		OptionQuery,
-	>;
-
 	/// Keep track of the swap intent data of a maker. This can/should be
 	/// part of another pallet (such as a limit order protocol pallet) or stored
 	#[derive(Encode, Decode, TypeInfo, Eq, PartialEq, Clone, Debug)]
@@ -196,9 +187,6 @@ pub mod pallet {
 		StoredSwapIntent<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
 		OptionQuery,
 	>;
-
-	#[pallet::storage]
-	pub type Something<T> = StorageValue<Value = u32>;
 
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -364,11 +352,6 @@ pub mod pallet {
 
 			Htlcs::<T>::insert(&htlc_id, &htlc);
 
-			ReservedDeposits::<T>::insert(
-				(&who, &htlc_id),
-				(updated_immutables.amount, updated_immutables.safety_deposit),
-			);
-
 			Self::deposit_event(Event::HtlcCreated {
 				htlc_id,
 				hashlock: immutables.hashlock,
@@ -476,8 +459,6 @@ pub mod pallet {
 			// update HTLC
 			htlc.status = HtlcStatus::Completed;
 			Htlcs::<T>::insert(&htlc_id, &htlc);
-
-			ReservedDeposits::<T>::remove((&htlc.immutables.taker, &htlc_id));
 
 			// emit event that shows the unhashed secret to the public
 			Self::deposit_event(Event::HtlcWithdrawn {
@@ -597,8 +578,6 @@ pub mod pallet {
 			htlc.status = HtlcStatus::Completed;
 			Htlcs::<T>::insert(&htlc_id, &htlc);
 
-			ReservedDeposits::<T>::remove((&htlc.immutables.taker, &htlc_id));
-
 			// emit event that shows the unhashed secret to the public
 			Self::deposit_event(Event::HtlcWithdrawn {
 				htlc_id,
@@ -693,8 +672,6 @@ pub mod pallet {
 			// update HTLC
 			htlc.status = HtlcStatus::Cancelled;
 			Htlcs::<T>::insert(&htlc_id, &htlc);
-
-			ReservedDeposits::<T>::remove((&htlc.immutables.taker, &htlc_id));
 
 			// emit event that shows the unhashed secret to the public
 			Self::deposit_event(Event::HtlcCancelled { htlc_id, refund_recipient });
