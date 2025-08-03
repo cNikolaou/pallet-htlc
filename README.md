@@ -2,7 +2,7 @@
 
 The current repo contains a [FRAME pallet](https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/polkadot_sdk/frame_runtime/index.html),
 named `pallet-htlc`, which implements functionality to create
-[hashed timelock contracts (HTLC) which can be used for asset swaps](https://1inch.io/assets/1inch-fusion-plus.pdf).
+[hashed timelock contracts (HTLC), which can be used for asset swaps](https://1inch.io/assets/1inch-fusion-plus.pdf).
 
 The Substrate pallet, follows the logic of the [`cross-chain-swap`](https://github.com/1inch/cross-chain-swap)
 smart contracts by 1inch. The core logic of the pallet handles both `EscrowSrc`
@@ -66,4 +66,53 @@ The swap intents are both stored on-chain and an event is deposited when
 a `SwapIntent` is created or cancelled.
 
 A relayer service can listen for the emitted intentions and forward them
-to the resolvers.
+to the resolvers. Then the resolvers can source HTLCs with `create_src_htlc`.
+
+The resolvers create `create_dst_htlc` based on events (intents) that happened
+on other chains.
+
+## Limitations & missing implementations
+
+The current repo contains a proof-of-concept implementation of HTLCs for asset
+swaps as a FRAME pallet that case be used by a Substrate-based chain such
+as Polkadot and its parachains.
+
+Below is a list of limitations that can be implemented in the future with more
+time for testing.
+
+### Pallet improvements
+
+A list of important, and not exhaustive, improvements on the pallet itself:
+
+**Support various asset to swap to/from**: Currently, the implementation focuses
+on swapping to/from the native asset of the Substrate-based chain. To allow
+for swaps to/from any asset on the chain
+
+**Pallet configuration parameters**: There are various parameters, such as
+`withdrawal_after`, `public_withdrawal_after`, `cancellation_after`, etc,
+that are configured by the taker. There should
+pallet-wide configuration parameters to allow the users of `pallet-htlc`
+to configure the minimum values that want to allow for these.
+
+See for example the:
+
+```rust
+#[pallet::constant]
+type MinSafetyDeposit: Get<BalanceOf<Self>>;
+```
+s
+**Allow only KYC resolver**: Anyone is allowed to call the functions that
+the pallet provides without validating whether a resolver has a successfully
+passed a KYC. This can be implemented by gating the resolver-specific functions
+with an `ensure!()` that tests for ownership of a non-funglible token.
+
+**Makers should also store a refundable deposit**: A maker can currently
+create multiple `SwapIntent`s with unrealistic exchange options by
+committing only a small value of the token to be swapped. A malicious
+maker can create thousands or `SwapIntent`s with the goal to make the
+storage more expensive to run for the users of the `pallet-htlc`.
+
+**Keep track of past SwapIntents**: A lot of data about each `SwapIntent`
+are currently stored on-chain. We want to store only the `nonces` and the
+hashes of the the `SwapIntent`s that have already been submitted (to avoid
+repeated submissions of the same `SwapIntent`s and provide deduplication).
