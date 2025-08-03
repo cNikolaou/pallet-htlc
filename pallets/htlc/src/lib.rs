@@ -23,7 +23,7 @@ pub mod pallet {
 		},
 	};
 	use frame_system::pallet_prelude::*;
-	use sp_core::H256;
+	use sp_core::{H160, H256};
 	use sp_io::hashing::blake2_256;
 	use sp_runtime::traits::{BlakeTwo256, Dispatchable, Hash, TrailingZeroInput};
 	use sp_std::prelude::*;
@@ -63,6 +63,9 @@ pub mod pallet {
 		/// The safety deposit. Goes to whoever calls the withdraw.
 		#[codec(index = 1)]
 		SafetyDeposit,
+		/// Amount held from the maker for each swap intent.
+		#[codec(index = 2)]
+		MakerSwapIntentAmount,
 	}
 
 	/// Immutable parameters of the HTLC, similar to 1inch IBaseEscrow.Immutables
@@ -129,16 +132,59 @@ pub mod pallet {
 		OptionQuery,
 	>;
 
+	/// Keep track of the intents of a maker. This can/should be part of
+	/// another pallet (such as a limit order protocol pallet) or stored
+	#[derive(Encode, Decode, TypeInfo, Eq, PartialEq, Clone, Debug)]
+	pub struct SwapIntent<AccountId, Balance, BlockNumber> {
+		pub hashlock: H256,
+		/// Account that intents to swap
+		pub maker: AccountId,
+		/// Amount they own and want to provide
+		pub src_amount: Balance,
+		/// Amount they own and want to receive
+		pub dst_amount: Balance,
+		/// Address on the destination chain
+		pub dst_address: H160,
+		pub timeout_after_block: BlockNumber,
+		pub nonce: u64,
+	}
+
+	#[derive(Encode, Decode, TypeInfo, Eq, PartialEq, Clone, Debug)]
+	pub enum IntentStatus<AccountId> {
+		/// Intent is active and available for resolvers
+		Active,
+		/// Intent is being fulfilled (resolver created source HTLC)
+		InProgress { resolver: AccountId, htlc_id: H256 },
+		/// Intent has been completed successfully
+		Completed,
+		/// Intent was cancelled by maker
+		Cancelled,
+		/// Intent expired without fulfillment
+		Expired,
+	}
+
+	#[derive(Encode, Decode, TypeInfo, Eq, PartialEq, Clone, Debug)]
+	pub struct StoredSwapIntent<AccountId, Balance, BlockNumber> {
+		pub intent: SwapIntent<AccountId, Balance, BlockNumber>,
+		pub status: IntentStatus<AccountId>,
+		pub created_at: BlockNumber,
+	}
+
+	#[pallet::storage]
+	pub type SwapIntents<T: Config> = StorageMap<
+		_,
+		Blake2_128Concat,
+		H256,
+		StoredSwapIntent<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
+		OptionQuery,
+	>;
+
 	#[pallet::storage]
 	pub type Something<T> = StorageValue<Value = u32>;
-	#[pallet::storage]
-	pub type SomethingMap<T: Config> = StorageMap<Key = T::AccountId, Value = BlockNumberFor<T>>;
 
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		/// Event example.
-		SomethingStored { something: u32, who: T::AccountId },
 		/// HTLC created.
 		HtlcCreated {
 			htlc_id: H256,
@@ -157,6 +203,26 @@ pub mod pallet {
 		},
 		/// HTLC cancelled.
 		HtlcCancelled { htlc_id: H256, refund_recipient: T::AccountId },
+
+		/// Swap intent created by maker.
+		SwapIntentCreated {
+			maker: T::AccountId,
+			nonce: u64,
+			src_amount: BalanceOf<T>,
+			dst_amount: BalanceOf<T>,
+			dst_address: H160,
+			hashlock: H256,
+		},
+
+		/// Swap intent.
+		SwapIntentCancelled {
+			maker: T::AccountId,
+			nonce: u64,
+			src_amount: BalanceOf<T>,
+			dst_amount: BalanceOf<T>,
+			dst_address: H160,
+			hashlock: H256,
+		},
 	}
 
 	#[pallet::error]
@@ -207,10 +273,19 @@ pub mod pallet {
 
 		/// HTLC is not active.
 		HtlcNotActive,
+
+		/// Intent already exists.
+		IntentAlreadyExists,
+
+		/// Intent does not already exists.
+		IntentDoesNotExists,
 	}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
+		///////
+		/// Calls for DST HTLCs
+
 		#[pallet::call_index(0)]
 		pub fn create_dst_htlc(
 			origin: OriginFor<T>,
@@ -503,6 +578,88 @@ pub mod pallet {
 
 			Ok(())
 		}
+
+		///////
+		/// Calls for Swap intents
+
+		#[pallet::call_index(4)]
+		pub fn create_swap_intent(
+			origin: OriginFor<T>,
+			intent: SwapIntent<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			// ensure the maker creates the intent to swap
+			ensure!(who == intent.maker, Error::<T>::InvalidCaller);
+
+			// generate the key for the map and check it doesn't already exist
+			let intent_key = Self::intent_key(&who, intent.nonce);
+			ensure!(!SwapIntents::<T>::contains_key(&intent_key), Error::<T>::IntentAlreadyExists);
+
+			let current_block = frame_system::Pallet::<T>::block_number();
+			let stored_intent = StoredSwapIntent {
+				intent: intent.clone(),
+				status: IntentStatus::Active,
+				created_at: current_block,
+			};
+
+			SwapIntents::<T>::insert(&intent_key, &stored_intent);
+
+			T::NativeBalance::hold(
+				&HoldReason::MakerSwapIntentAmount.into(),
+				&who,
+				intent.src_amount,
+			)
+			.map_err(|_| Error::<T>::InsufficientBalance)?;
+
+			Self::deposit_event(Event::SwapIntentCreated {
+				maker: who,
+				nonce: intent.nonce,
+				src_amount: intent.src_amount,
+				dst_amount: intent.dst_amount,
+				dst_address: intent.dst_address,
+				hashlock: intent.hashlock,
+			});
+
+			Ok(())
+		}
+
+		#[pallet::call_index(5)]
+		pub fn cancel_swap_intent(origin: OriginFor<T>, nonce: u64) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			// generate the key for the map and check it doesn't already exist
+			let intent_key = Self::intent_key(&who, nonce);
+			let mut stored_intent =
+				SwapIntents::<T>::get(&intent_key).ok_or(Error::<T>::IntentDoesNotExists)?;
+
+			// ensure we cannot cancel an already cancelled intent
+			ensure!(stored_intent.status == IntentStatus::Active, Error::<T>::IntentNotActive);
+
+			// ensure the maker cancels the intent to swap
+			ensure!(who == stored_intent.intent.maker, Error::<T>::InvalidCaller);
+
+			stored_intent.status = IntentStatus::Cancelled;
+			SwapIntents::<T>::insert(&intent_key, &stored_intent);
+
+			T::NativeBalance::release(
+				&HoldReason::MakerSwapIntentAmount.into(),
+				&who,
+				stored_intent.intent.src_amount,
+				Precision::Exact,
+			)?;
+
+			Self::deposit_event(Event::SwapIntentCancelled {
+				maker: who,
+				nonce,
+				src_amount: stored_intent.intent.src_amount,
+				dst_amount: stored_intent.intent.dst_amount,
+				dst_address: stored_intent.intent.dst_address,
+				hashlock: stored_intent.intent.hashlock,
+			});
+
+			Ok(())
+		}
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -512,6 +669,13 @@ pub mod pallet {
 		) -> H256 {
 			let encoded = immutables.encode();
 			BlakeTwo256::hash(&encoded)
+		}
+
+		/// Geenrate intent storage key from maker AccountId + nonce
+		pub fn intent_key(maker: &T::AccountId, nonce: u64) -> H256 {
+			let mut data = maker.encode();
+			data.extend_from_slice(&nonce.to_le_bytes());
+			BlakeTwo256::hash(&data)
 		}
 	}
 }

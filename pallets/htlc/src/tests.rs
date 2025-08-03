@@ -3,7 +3,7 @@ use frame_support::{
 	assert_noop, assert_ok,
 	traits::{fungible::InspectHold, Get},
 };
-use sp_core::{blake2_256, H256};
+use sp_core::{blake2_256, H160, H256};
 
 const ALICE: u64 = 1;
 const RESOLVER_BOB: u64 = 2;
@@ -11,6 +11,9 @@ const RESOLVER_CHARLIE: u64 = 3;
 
 const SWAP_AMOUNT: u128 = 1000;
 const SAFETY_DEPOSIT: u128 = 100;
+
+const SRC_AMOUNT: u128 = 1000;
+const DST_AMOUNT: u128 = 2000;
 
 fn hash_secret(secret: &[u8]) -> H256 {
 	H256(blake2_256(secret))
@@ -38,6 +41,24 @@ fn create_test_htlc_immutables(
 			cancellation_after: current_block + 300,
 		},
 	}
+}
+
+fn get_h160_addr(address: u64) -> H160 {
+	let mut addr_bytes = [0u8; 20];
+	addr_bytes[12..20].copy_from_slice(&address.to_be_bytes());
+	H160::from(addr_bytes)
+}
+
+fn create_swap_intent(
+	hashlock: H256,
+	maker: u64,
+	src_amount: u128,
+	dst_amount: u128,
+	dst_address: H160,
+	timeout_after_block: u64,
+	nonce: u64,
+) -> SwapIntent<u64, u128, u64> {
+	SwapIntent { hashlock, maker, src_amount, dst_amount, dst_address, timeout_after_block, nonce }
 }
 
 #[test]
@@ -509,5 +530,114 @@ fn create_htlc_and_cancel_it() {
 
 		// verify deposited event
 		System::assert_last_event(Event::HtlcCancelled { htlc_id, refund_recipient: taker }.into());
+	});
+}
+
+#[test]
+fn create_swap_intent_and_cancel_it() {
+	new_test_ext().execute_with(|| {
+		// track events
+		System::set_block_number(1);
+
+		// initial setup
+		let maker = ALICE;
+
+		let src_amount = SRC_AMOUNT;
+		let dst_amount = DST_AMOUNT;
+		let dst_address = get_h160_addr(ALICE + 1000);
+		let nonce = 0;
+
+		let current_block = 1u64;
+
+		let secret = b"tests_secret";
+		let hashlock = hash_secret(secret);
+
+		// verify initial balances
+		assert_eq!(Balances::free_balance(&maker), 1000000);
+
+		// create immutables for the test
+		let swap_intent = create_swap_intent(
+			hashlock,
+			maker,
+			src_amount,
+			dst_amount,
+			dst_address,
+			current_block + 1000,
+			nonce,
+		);
+
+		// create intent
+		assert_ok!(HtlcEscrow::create_swap_intent(
+			RuntimeOrigin::signed(maker),
+			swap_intent.clone(),
+		));
+
+		// verify reserved funds from the maker
+		assert_eq!(Balances::free_balance(&maker), 1000000 - src_amount);
+
+		// verify swap intent is stored correclty
+		let intent_key = HtlcEscrow::intent_key(&maker, nonce);
+		let stored_swap_intent =
+			SwapIntents::<Test>::get(&intent_key).expect("Swap intent id is contained; qed");
+
+		assert_eq!(stored_swap_intent.status, IntentStatus::Active);
+		assert_eq!(stored_swap_intent.intent.hashlock, swap_intent.hashlock);
+		assert_eq!(stored_swap_intent.intent.maker, swap_intent.maker);
+		assert_eq!(stored_swap_intent.intent.src_amount, swap_intent.src_amount);
+		assert_eq!(stored_swap_intent.intent.dst_amount, swap_intent.dst_amount);
+		assert_eq!(stored_swap_intent.intent.dst_address, swap_intent.dst_address);
+		assert_eq!(stored_swap_intent.intent.timeout_after_block, swap_intent.timeout_after_block);
+		assert_eq!(stored_swap_intent.intent.nonce, swap_intent.nonce);
+
+		// verify deposited event
+		System::assert_last_event(
+			Event::SwapIntentCreated {
+				maker,
+				nonce,
+				src_amount,
+				dst_amount,
+				dst_address,
+				hashlock,
+			}
+			.into(),
+		);
+
+		System::set_block_number(2);
+
+		// cancellation by `taker` should fail; still too early to cancel
+		assert_ok!(HtlcEscrow::cancel_swap_intent(
+			RuntimeOrigin::signed(maker),
+			stored_swap_intent.intent.nonce
+		));
+
+		// `maker` should still have the same balance as before; no swap occurred
+		// and intent cancelled
+		assert_eq!(Balances::free_balance(&maker), 1000000);
+
+		let stored_swap_intent =
+			SwapIntents::<Test>::get(&intent_key).expect("Swap intent id is contained; qed");
+
+		assert_eq!(stored_swap_intent.status, IntentStatus::Cancelled);
+
+		// cancelling an already cancelled intent fails
+		assert_noop!(
+			HtlcEscrow::cancel_swap_intent(
+				RuntimeOrigin::signed(maker),
+				stored_swap_intent.intent.nonce
+			),
+			Error::<Test>::IntentNotActive
+		);
+
+		System::assert_last_event(
+			Event::SwapIntentCancelled {
+				maker,
+				nonce,
+				src_amount,
+				dst_amount,
+				dst_address,
+				hashlock,
+			}
+			.into(),
+		);
 	});
 }
