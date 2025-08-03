@@ -55,6 +55,7 @@ pub mod pallet {
 		type RuntimeHoldReason: From<HoldReason>;
 	}
 
+	/// Reason options for held funds.
 	#[pallet::composite_enum]
 	pub enum HoldReason {
 		/// The funds for the recipient of the swap.
@@ -101,6 +102,8 @@ pub mod pallet {
 		pub cancellation_after: BlockNumber,
 	}
 
+	/// The status of a HTLC guards against malicious actors who aim to
+	/// take incorrect actions.
 	#[derive(Encode, Decode, TypeInfo, Eq, PartialEq, Clone, Debug)]
 	pub enum HtlcStatus {
 		Active,
@@ -108,10 +111,20 @@ pub mod pallet {
 		Cancelled,
 	}
 
+	/// Type of the HTLC to differentiate execution paths between EscrowSrc
+	/// and EscrowDst HTL contracts.
+	#[derive(Encode, Decode, TypeInfo, Eq, PartialEq, Clone, Debug)]
+	pub enum HtlcType {
+		Source,
+		Destination,
+	}
+
+	/// The information for each HTLC that needs to be stored on-chain.
 	#[derive(Encode, Decode, TypeInfo)]
 	pub struct Htlc<AccountId, Balance, BlockNumber> {
 		pub immutables: Immutables<AccountId, Balance, BlockNumber>,
 		pub status: HtlcStatus,
+		pub htlc_type: HtlcType,
 	}
 
 	#[pallet::storage]
@@ -132,8 +145,8 @@ pub mod pallet {
 		OptionQuery,
 	>;
 
-	/// Keep track of the intents of a maker. This can/should be part of
-	/// another pallet (such as a limit order protocol pallet) or stored
+	/// Keep track of the swap intent data of a maker. This can/should be
+	/// part of another pallet (such as a limit order protocol pallet) or stored
 	#[derive(Encode, Decode, TypeInfo, Eq, PartialEq, Clone, Debug)]
 	pub struct SwapIntent<AccountId, Balance, BlockNumber> {
 		pub hashlock: H256,
@@ -149,6 +162,11 @@ pub mod pallet {
 		pub nonce: u64,
 	}
 
+	/// Enum to keep track of the state of each swap intent submitted
+	/// by the maker. We should remove intents after they are completed
+	/// or cancelled and keep track of the hash/nonce of the ones that
+	/// have already been part of the chain. This is an improvement
+	/// over the current implementation that should be implemented.
 	#[derive(Encode, Decode, TypeInfo, Eq, PartialEq, Clone, Debug)]
 	pub enum IntentStatus<AccountId> {
 		/// Intent is active and available for resolvers
@@ -338,7 +356,11 @@ pub mod pallet {
 			)
 			.map_err(|_| Error::<T>::InsufficientBalance)?;
 
-			let htlc = Htlc { immutables: updated_immutables.clone(), status: HtlcStatus::Active };
+			let htlc = Htlc {
+				immutables: immutables.clone(),
+				status: HtlcStatus::Active,
+				htlc_type: HtlcType::Destination,
+			};
 
 			Htlcs::<T>::insert(&htlc_id, &htlc);
 
@@ -360,7 +382,7 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(1)]
-		pub fn dst_withdraw(
+		pub fn withdraw(
 			origin: OriginFor<T>,
 			immutables: Immutables<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
 			secret: Vec<u8>,
@@ -397,22 +419,53 @@ pub mod pallet {
 
 			// Withdrawal phase
 
-			// release & transfer swap amount to maker
-			T::NativeBalance::release(
-				&HoldReason::SwapAmount.into(),
-				&htlc.immutables.taker,
-				htlc.immutables.amount,
-				Precision::Exact,
-			)?;
+			let beneficiary;
 
-			T::NativeBalance::transfer(
-				&htlc.immutables.taker,
-				&htlc.immutables.maker,
-				htlc.immutables.amount,
-				Preservation::Preserve,
-			)?;
+			match htlc.htlc_type {
+				HtlcType::Destination => {
+					// Destination HTLC: EVM -> Polkadot
+					// Resolver (taker) deposited funds for maker
+					// Funds go: taker -> maker
+					T::NativeBalance::release(
+						&HoldReason::SwapAmount.into(),
+						&htlc.immutables.taker,
+						htlc.immutables.amount,
+						Precision::Exact,
+					)?;
 
-			// release safety deposit to the take
+					T::NativeBalance::transfer(
+						&htlc.immutables.taker,
+						&htlc.immutables.maker,
+						htlc.immutables.amount,
+						Preservation::Preserve,
+					)?;
+
+					beneficiary = htlc.immutables.maker.clone();
+				},
+
+				HtlcType::Source => {
+					// Destination HTLC: Polkadot -> EVM
+					// Maker deposited funds for taker
+					// Funds go: maker -> taker
+					T::NativeBalance::release(
+						&HoldReason::MakerSwapIntentAmount.into(),
+						&htlc.immutables.maker,
+						htlc.immutables.amount,
+						Precision::Exact,
+					)?;
+
+					T::NativeBalance::transfer(
+						&htlc.immutables.maker,
+						&htlc.immutables.taker,
+						htlc.immutables.amount,
+						Preservation::Preserve,
+					)?;
+
+					beneficiary = htlc.immutables.taker.clone();
+				},
+			}
+
+			// Safety deposit back to taker
 			T::NativeBalance::release(
 				&HoldReason::SafetyDeposit.into(),
 				&htlc.immutables.taker,
@@ -431,7 +484,7 @@ pub mod pallet {
 				htlc_id,
 				secret,
 				amount: immutables.amount,
-				beneficiary: htlc.immutables.maker,
+				beneficiary,
 				safety_deposit_recipient: who,
 			});
 
@@ -439,7 +492,7 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(2)]
-		pub fn dst_public_withdraw(
+		pub fn public_withdraw(
 			origin: OriginFor<T>,
 			immutables: Immutables<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
 			secret: Vec<u8>,
@@ -479,20 +532,51 @@ pub mod pallet {
 
 			// Withdrawal phase
 
-			// release & transfer swap amount to maker
-			T::NativeBalance::release(
-				&HoldReason::SwapAmount.into(),
-				&htlc.immutables.taker,
-				htlc.immutables.amount,
-				Precision::Exact,
-			)?;
+			let beneficiary;
 
-			T::NativeBalance::transfer(
-				&htlc.immutables.taker,
-				&htlc.immutables.maker,
-				htlc.immutables.amount,
-				Preservation::Preserve,
-			)?;
+			match htlc.htlc_type {
+				HtlcType::Destination => {
+					// Destination HTLC: EVM -> Polkadot
+					// Resolver (taker) deposited funds for maker
+					// Funds go: taker -> maker
+					T::NativeBalance::release(
+						&HoldReason::SwapAmount.into(),
+						&htlc.immutables.taker,
+						htlc.immutables.amount,
+						Precision::Exact,
+					)?;
+
+					T::NativeBalance::transfer(
+						&htlc.immutables.taker,
+						&htlc.immutables.maker,
+						htlc.immutables.amount,
+						Preservation::Preserve,
+					)?;
+
+					beneficiary = htlc.immutables.maker.clone();
+				},
+
+				HtlcType::Source => {
+					// Destination HTLC: Polkadot -> EVM
+					// Maker deposited funds for taker
+					// Funds go: maker -> taker
+					T::NativeBalance::release(
+						&HoldReason::MakerSwapIntentAmount.into(),
+						&htlc.immutables.maker,
+						htlc.immutables.amount,
+						Precision::Exact,
+					)?;
+
+					T::NativeBalance::transfer(
+						&htlc.immutables.maker,
+						&htlc.immutables.taker,
+						htlc.immutables.amount,
+						Preservation::Preserve,
+					)?;
+
+					beneficiary = htlc.immutables.taker.clone();
+				},
+			}
 
 			// release safety deposit to the take
 			T::NativeBalance::release(
@@ -520,7 +604,7 @@ pub mod pallet {
 				htlc_id,
 				secret,
 				amount: immutables.amount,
-				beneficiary: htlc.immutables.maker,
+				beneficiary,
 				safety_deposit_recipient: who,
 			});
 
@@ -528,7 +612,7 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(3)]
-		pub fn dst_cancel(
+		pub fn cancel(
 			origin: OriginFor<T>,
 			immutables: Immutables<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
 		) -> DispatchResult {
@@ -558,22 +642,53 @@ pub mod pallet {
 			);
 
 			// Canellation phase
+			let refund_recipient;
 
-			// release & transfer swap amount to maker
-			T::NativeBalance::release(
-				&HoldReason::SwapAmount.into(),
-				&htlc.immutables.taker,
-				htlc.immutables.amount,
-				Precision::Exact,
-			)?;
+			match htlc.htlc_type {
+				HtlcType::Destination => {
+					// Destination HTLC: EVM -> Polkadot
+					// Resolver (taker) deposited funds for maker
+					// Funds go back to taker
+					T::NativeBalance::release(
+						&HoldReason::SwapAmount.into(),
+						&htlc.immutables.taker,
+						htlc.immutables.amount,
+						Precision::Exact,
+					)?;
 
-			// release safety deposit to the take
-			T::NativeBalance::release(
-				&HoldReason::SafetyDeposit.into(),
-				&htlc.immutables.taker,
-				htlc.immutables.safety_deposit,
-				Precision::Exact,
-			)?;
+					// release safety deposit to the take
+					T::NativeBalance::release(
+						&HoldReason::SafetyDeposit.into(),
+						&htlc.immutables.taker,
+						htlc.immutables.safety_deposit,
+						Precision::Exact,
+					)?;
+
+					refund_recipient = htlc.immutables.taker.clone();
+				},
+
+				HtlcType::Source => {
+					// Destination HTLC: Polkadot -> EVM
+					// Maker deposited funds for taker
+					// Funds go back to maker
+					T::NativeBalance::release(
+						&HoldReason::MakerSwapIntentAmount.into(),
+						&htlc.immutables.maker,
+						htlc.immutables.amount,
+						Precision::Exact,
+					)?;
+
+					// release safety deposit to the take
+					T::NativeBalance::release(
+						&HoldReason::SafetyDeposit.into(),
+						&htlc.immutables.taker,
+						htlc.immutables.safety_deposit,
+						Precision::Exact,
+					)?;
+
+					refund_recipient = htlc.immutables.maker.clone();
+				},
+			}
 
 			// update HTLC
 			htlc.status = HtlcStatus::Cancelled;
@@ -582,7 +697,7 @@ pub mod pallet {
 			ReservedDeposits::<T>::remove((&htlc.immutables.taker, &htlc_id));
 
 			// emit event that shows the unhashed secret to the public
-			Self::deposit_event(Event::HtlcCancelled { htlc_id, refund_recipient: who });
+			Self::deposit_event(Event::HtlcCancelled { htlc_id, refund_recipient });
 
 			Ok(())
 		}
@@ -727,7 +842,11 @@ pub mod pallet {
 			)
 			.map_err(|_| Error::<T>::InsufficientBalance)?;
 
-			let htlc = Htlc { immutables: immutables.clone(), status: HtlcStatus::Active };
+			let htlc = Htlc {
+				immutables: immutables.clone(),
+				status: HtlcStatus::Active,
+				htlc_type: HtlcType::Source,
+			};
 
 			Htlcs::<T>::insert(&htlc_id, &htlc);
 

@@ -124,6 +124,7 @@ fn create_htlc_and_reserve_funds() {
 		let stored_htlc = Htlcs::<Test>::get(&htlc_id).expect("HTLC id is contained; qed");
 
 		assert_eq!(stored_htlc.status, HtlcStatus::Active);
+		assert_eq!(stored_htlc.htlc_type, HtlcType::Destination);
 		assert_eq!(stored_htlc.immutables.timelocks.deployed_at, current_block);
 		assert_eq!(stored_htlc.immutables.amount, immutables.amount);
 		assert_eq!(stored_htlc.immutables.safety_deposit, immutables.safety_deposit);
@@ -209,6 +210,7 @@ fn withdraw_success_with_valid_secret() {
 		let stored_htlc = Htlcs::<Test>::get(&htlc_id).expect("HTLC id is contained; qed");
 
 		assert_eq!(stored_htlc.status, HtlcStatus::Active);
+		assert_eq!(stored_htlc.htlc_type, HtlcType::Destination);
 		assert_eq!(stored_htlc.immutables.timelocks.deployed_at, current_block);
 		assert_eq!(stored_htlc.immutables.amount, immutables.amount);
 		assert_eq!(stored_htlc.immutables.safety_deposit, immutables.safety_deposit);
@@ -217,11 +219,7 @@ fn withdraw_success_with_valid_secret() {
 
 		// attempt early withdrawal by `taker` should fail
 		assert_noop!(
-			HtlcEscrow::dst_withdraw(
-				RuntimeOrigin::signed(taker),
-				immutables.clone(),
-				secret.to_vec(),
-			),
+			HtlcEscrow::withdraw(RuntimeOrigin::signed(taker), immutables.clone(), secret.to_vec(),),
 			Error::<Test>::EarlyWithdrawal,
 		);
 
@@ -229,7 +227,7 @@ fn withdraw_success_with_valid_secret() {
 		let after_withdrawal_block = immutables.timelocks.withdrawal_after + 10;
 		System::set_block_number(after_withdrawal_block);
 
-		assert_ok!(HtlcEscrow::dst_withdraw(
+		assert_ok!(HtlcEscrow::withdraw(
 			RuntimeOrigin::signed(taker),
 			immutables.clone(),
 			secret.to_vec(),
@@ -245,11 +243,7 @@ fn withdraw_success_with_valid_secret() {
 
 		// cannot `withdraw` again
 		assert_noop!(
-			HtlcEscrow::dst_withdraw(
-				RuntimeOrigin::signed(taker),
-				immutables.clone(),
-				secret.to_vec(),
-			),
+			HtlcEscrow::withdraw(RuntimeOrigin::signed(taker), immutables.clone(), secret.to_vec(),),
 			Error::<Test>::HtlcNotActive
 		);
 
@@ -333,6 +327,7 @@ fn public_withdraw_success_by_third_party() {
 		let stored_htlc = Htlcs::<Test>::get(&htlc_id).expect("HTLC id is contained; qed");
 
 		assert_eq!(stored_htlc.status, HtlcStatus::Active);
+		assert_eq!(stored_htlc.htlc_type, HtlcType::Destination);
 		assert_eq!(stored_htlc.immutables.timelocks.deployed_at, current_block);
 		assert_eq!(stored_htlc.immutables.amount, immutables.amount);
 		assert_eq!(stored_htlc.immutables.safety_deposit, immutables.safety_deposit);
@@ -341,7 +336,7 @@ fn public_withdraw_success_by_third_party() {
 
 		// attempt early public withdrawal by `third_party` should fail
 		assert_noop!(
-			HtlcEscrow::dst_public_withdraw(
+			HtlcEscrow::public_withdraw(
 				RuntimeOrigin::signed(third_party),
 				immutables.clone(),
 				secret.to_vec(),
@@ -356,7 +351,7 @@ fn public_withdraw_success_by_third_party() {
 		// attempt early withdrawal by `third_party` should still fail;
 		// the `third_party` hasn't waited enough
 		assert_noop!(
-			HtlcEscrow::dst_public_withdraw(
+			HtlcEscrow::public_withdraw(
 				RuntimeOrigin::signed(third_party),
 				immutables.clone(),
 				secret.to_vec(),
@@ -367,7 +362,7 @@ fn public_withdraw_success_by_third_party() {
 		// `third_party` calls the `withdraw` and fails; only the taker
 		// can call that
 		assert_noop!(
-			HtlcEscrow::dst_withdraw(
+			HtlcEscrow::withdraw(
 				RuntimeOrigin::signed(third_party),
 				immutables.clone(),
 				secret.to_vec(),
@@ -380,7 +375,7 @@ fn public_withdraw_success_by_third_party() {
 		System::set_block_number(after_public_withdrawal_block);
 
 		// third_party calls the `public_withdraw`
-		assert_ok!(HtlcEscrow::dst_public_withdraw(
+		assert_ok!(HtlcEscrow::public_withdraw(
 			RuntimeOrigin::signed(third_party),
 			immutables.clone(),
 			secret.to_vec(),
@@ -398,7 +393,7 @@ fn public_withdraw_success_by_third_party() {
 
 		// cannot `public_withdraw` again
 		assert_noop!(
-			HtlcEscrow::dst_public_withdraw(
+			HtlcEscrow::public_withdraw(
 				RuntimeOrigin::signed(third_party),
 				immutables.clone(),
 				secret.to_vec(),
@@ -485,6 +480,7 @@ fn create_htlc_and_cancel_it() {
 		let stored_htlc = Htlcs::<Test>::get(&htlc_id).expect("HTLC id is contained; qed");
 
 		assert_eq!(stored_htlc.status, HtlcStatus::Active);
+		assert_eq!(stored_htlc.htlc_type, HtlcType::Destination);
 		assert_eq!(stored_htlc.immutables.timelocks.deployed_at, current_block);
 		assert_eq!(stored_htlc.immutables.amount, immutables.amount);
 		assert_eq!(stored_htlc.immutables.safety_deposit, immutables.safety_deposit);
@@ -493,7 +489,7 @@ fn create_htlc_and_cancel_it() {
 
 		// attempt early cancellation by `taker` should fail
 		assert_noop!(
-			HtlcEscrow::dst_cancel(RuntimeOrigin::signed(taker), immutables.clone()),
+			HtlcEscrow::cancel(RuntimeOrigin::signed(taker), immutables.clone()),
 			Error::<Test>::EarlyCancellation,
 		);
 
@@ -503,7 +499,7 @@ fn create_htlc_and_cancel_it() {
 
 		// cancellation by `taker` should fail; still too early to cancel
 		assert_noop!(
-			HtlcEscrow::dst_cancel(RuntimeOrigin::signed(taker), immutables.clone()),
+			HtlcEscrow::cancel(RuntimeOrigin::signed(taker), immutables.clone()),
 			Error::<Test>::EarlyCancellation,
 		);
 
@@ -513,7 +509,7 @@ fn create_htlc_and_cancel_it() {
 
 		// cancellation by `taker` should fail; still too early to cancel
 		assert_noop!(
-			HtlcEscrow::dst_cancel(RuntimeOrigin::signed(taker), immutables.clone()),
+			HtlcEscrow::cancel(RuntimeOrigin::signed(taker), immutables.clone()),
 			Error::<Test>::EarlyCancellation,
 		);
 
@@ -522,7 +518,7 @@ fn create_htlc_and_cancel_it() {
 		System::set_block_number(after_cancellation_block);
 
 		// cancellation by `taker` should fail; still too early to cancel
-		assert_ok!(HtlcEscrow::dst_cancel(RuntimeOrigin::signed(taker), immutables.clone()));
+		assert_ok!(HtlcEscrow::cancel(RuntimeOrigin::signed(taker), immutables.clone()));
 
 		// `maker` should still have the same balance as before; no swap occurred
 		// `taker` should still have the same balance as before; no swap occurred
@@ -535,11 +531,7 @@ fn create_htlc_and_cancel_it() {
 
 		// cannot `withdraw` after cancellation
 		assert_noop!(
-			HtlcEscrow::dst_withdraw(
-				RuntimeOrigin::signed(taker),
-				immutables.clone(),
-				secret.to_vec(),
-			),
+			HtlcEscrow::withdraw(RuntimeOrigin::signed(taker), immutables.clone(), secret.to_vec(),),
 			Error::<Test>::HtlcNotActive
 		);
 
@@ -771,6 +763,7 @@ fn create_swap_intent_then_dst_htlc_then_withdraw() {
 		let stored_htlc = Htlcs::<Test>::get(&htlc_id).expect("HTLC id is contained; qed");
 
 		assert_eq!(stored_htlc.status, HtlcStatus::Active);
+		assert_eq!(stored_htlc.htlc_type, HtlcType::Source);
 		assert_eq!(stored_htlc.immutables.timelocks.deployed_at, current_block);
 		assert_eq!(stored_htlc.immutables.amount, immutables.amount);
 		assert_eq!(stored_htlc.immutables.safety_deposit, immutables.safety_deposit);
@@ -790,5 +783,452 @@ fn create_swap_intent_then_dst_htlc_then_withdraw() {
 			}
 			.into(),
 		);
+
+		System::set_block_number(immutables.timelocks.withdrawal_after + 1);
+
+		// //
+		// Stage 3: Taker withdraws and receives safety_deposit and src_amount
+		assert_ok!(
+			HtlcEscrow::withdraw(RuntimeOrigin::signed(taker), immutables, secret.to_vec(),)
+		);
+
+		// verify funds have been transfered
+		assert_eq!(Balances::free_balance(&taker), 1000000 + src_amount);
+		assert_eq!(Balances::balance_on_hold(&crate::HoldReason::SafetyDeposit.into(), &taker), 0);
+		assert_eq!(Balances::free_balance(&maker), 1000000 - src_amount);
+		assert_eq!(
+			Balances::balance_on_hold(&crate::HoldReason::MakerSwapIntentAmount.into(), &maker),
+			0
+		);
+
+		let immutables = create_test_htlc_immutables(
+			intent_key,
+			hashlock,
+			maker,
+			taker,
+			src_amount,
+			safety_deposit,
+			1,
+		);
+
+		// verify HTLC is stored correclty
+		let htlc_id = HtlcEscrow::hash_immutables(&immutables);
+		let stored_htlc = Htlcs::<Test>::get(&htlc_id).expect("HTLC id is contained; qed");
+
+		assert_eq!(stored_htlc.status, HtlcStatus::Completed);
+		assert_eq!(stored_htlc.htlc_type, HtlcType::Source);
+		assert_eq!(stored_htlc.immutables.timelocks.deployed_at, current_block);
+		assert_eq!(stored_htlc.immutables.amount, immutables.amount);
+		assert_eq!(stored_htlc.immutables.safety_deposit, immutables.safety_deposit);
+		assert_eq!(stored_htlc.immutables.maker, immutables.maker);
+		assert_eq!(stored_htlc.immutables.taker, immutables.taker);
+		assert_eq!(stored_htlc.immutables.timelocks, immutables.timelocks);
+
+		// verify deposited event
+		System::assert_last_event(
+			Event::HtlcWithdrawn {
+				htlc_id,
+				secret: secret.to_vec(),
+				amount: src_amount,
+				beneficiary: taker,
+				safety_deposit_recipient: taker,
+			}
+			.into(),
+		);
+	});
+}
+
+#[test]
+fn create_swap_intent_then_dst_htlc_then_public_withdraw() {
+	new_test_ext().execute_with(|| {
+		// track events
+		System::set_block_number(1);
+
+		// initial setup
+		let maker = ALICE;
+		let taker = RESOLVER_BOB;
+		let third_party = RESOLVER_CHARLIE;
+
+		let src_amount = SRC_AMOUNT;
+		let dst_amount = DST_AMOUNT;
+		let dst_address = get_h160_addr(ALICE + 1000);
+		let nonce = 0;
+
+		let safety_deposit = SAFETY_DEPOSIT;
+
+		let current_block = 1u64;
+
+		let secret = b"tests_secret";
+		let hashlock = hash_of_word(secret);
+
+		// verify initial balances
+		assert_eq!(Balances::free_balance(&maker), 1000000);
+
+		// create immutables for the test
+		let swap_intent = create_swap_intent(
+			hashlock,
+			maker,
+			src_amount,
+			dst_amount,
+			dst_address,
+			current_block + 1000,
+			nonce,
+		);
+
+		////
+		// Stage 1: Create swap intent
+		assert_ok!(HtlcEscrow::create_swap_intent(
+			RuntimeOrigin::signed(maker),
+			swap_intent.clone(),
+		));
+
+		// verify reserved funds from the maker
+		assert_eq!(Balances::free_balance(&maker), 1000000 - src_amount);
+
+		// verify swap intent is stored correclty
+		let intent_key = HtlcEscrow::intent_key(&maker, nonce);
+		let stored_swap_intent =
+			SwapIntents::<Test>::get(&intent_key).expect("Swap intent id is contained; qed");
+
+		assert_eq!(stored_swap_intent.status, IntentStatus::Active);
+		assert_eq!(stored_swap_intent.intent.hashlock, swap_intent.hashlock);
+		assert_eq!(stored_swap_intent.intent.maker, swap_intent.maker);
+		assert_eq!(stored_swap_intent.intent.src_amount, swap_intent.src_amount);
+		assert_eq!(stored_swap_intent.intent.dst_amount, swap_intent.dst_amount);
+		assert_eq!(stored_swap_intent.intent.dst_address, swap_intent.dst_address);
+		assert_eq!(stored_swap_intent.intent.timeout_after_block, swap_intent.timeout_after_block);
+		assert_eq!(stored_swap_intent.intent.nonce, swap_intent.nonce);
+
+		// verify deposited event
+		System::assert_last_event(
+			Event::SwapIntentCreated {
+				maker,
+				nonce,
+				src_amount,
+				dst_amount,
+				dst_address,
+				hashlock,
+			}
+			.into(),
+		);
+
+		System::set_block_number(2);
+
+		let timelocks = create_timelocks(1);
+
+		////
+		// Stage 2: Taker creates SRC HTLC
+		assert_ok!(HtlcEscrow::create_src_htlc(
+			RuntimeOrigin::signed(taker),
+			maker,
+			nonce,
+			timelocks,
+			safety_deposit,
+		));
+
+		// verify reserved funds
+		assert_eq!(Balances::free_balance(&taker), 1000000 - safety_deposit);
+		assert_eq!(
+			Balances::balance_on_hold(&crate::HoldReason::SafetyDeposit.into(), &taker),
+			safety_deposit
+		);
+		assert_eq!(Balances::free_balance(&maker), 1000000 - src_amount);
+		assert_eq!(
+			Balances::balance_on_hold(&crate::HoldReason::MakerSwapIntentAmount.into(), &maker),
+			src_amount
+		);
+
+		let immutables = create_test_htlc_immutables(
+			intent_key,
+			hashlock,
+			maker,
+			taker,
+			src_amount,
+			safety_deposit,
+			1,
+		);
+
+		// verify HTLC is stored correclty
+		let htlc_id = HtlcEscrow::hash_immutables(&immutables);
+		let stored_htlc = Htlcs::<Test>::get(&htlc_id).expect("HTLC id is contained; qed");
+
+		assert_eq!(stored_htlc.status, HtlcStatus::Active);
+		assert_eq!(stored_htlc.htlc_type, HtlcType::Source);
+		assert_eq!(stored_htlc.immutables.timelocks.deployed_at, current_block);
+		assert_eq!(stored_htlc.immutables.amount, immutables.amount);
+		assert_eq!(stored_htlc.immutables.safety_deposit, immutables.safety_deposit);
+		assert_eq!(stored_htlc.immutables.maker, immutables.maker);
+		assert_eq!(stored_htlc.immutables.taker, immutables.taker);
+		assert_eq!(stored_htlc.immutables.timelocks, immutables.timelocks);
+
+		// verify deposited event
+		System::assert_last_event(
+			Event::HtlcCreated {
+				htlc_id,
+				hashlock: immutables.hashlock,
+				maker,
+				taker,
+				amount: src_amount,
+				safety_deposit,
+			}
+			.into(),
+		);
+
+		System::set_block_number(immutables.timelocks.withdrawal_after + 1);
+
+		// //
+		// Stage 3: Taker withdraws and receives safety_deposit and src_amount
+
+		// early withdraw fails
+		assert_noop!(
+			HtlcEscrow::public_withdraw(
+				RuntimeOrigin::signed(third_party),
+				immutables.clone(),
+				secret.to_vec(),
+			),
+			Error::<Test>::EarlyPublicWithdrawal
+		);
+
+		System::set_block_number(immutables.timelocks.public_withdrawal_after + 1);
+
+		assert_ok!(HtlcEscrow::public_withdraw(
+			RuntimeOrigin::signed(third_party),
+			immutables,
+			secret.to_vec(),
+		));
+
+		// verify funds have been transfered correctly;
+		// the taker losses the safety_deposit which is taken by the third party
+		assert_eq!(Balances::free_balance(&taker), 1000000 + src_amount - safety_deposit);
+		assert_eq!(Balances::balance_on_hold(&crate::HoldReason::SafetyDeposit.into(), &taker), 0);
+		assert_eq!(Balances::free_balance(&maker), 1000000 - src_amount);
+		assert_eq!(
+			Balances::balance_on_hold(&crate::HoldReason::MakerSwapIntentAmount.into(), &maker),
+			0
+		);
+		assert_eq!(Balances::free_balance(&third_party), 1000000 + safety_deposit);
+
+		let immutables = create_test_htlc_immutables(
+			intent_key,
+			hashlock,
+			maker,
+			taker,
+			src_amount,
+			safety_deposit,
+			1,
+		);
+
+		// verify HTLC is stored correclty
+		let htlc_id = HtlcEscrow::hash_immutables(&immutables);
+		let stored_htlc = Htlcs::<Test>::get(&htlc_id).expect("HTLC id is contained; qed");
+
+		assert_eq!(stored_htlc.status, HtlcStatus::Completed);
+		assert_eq!(stored_htlc.htlc_type, HtlcType::Source);
+		assert_eq!(stored_htlc.immutables.timelocks.deployed_at, current_block);
+		assert_eq!(stored_htlc.immutables.amount, immutables.amount);
+		assert_eq!(stored_htlc.immutables.safety_deposit, immutables.safety_deposit);
+		assert_eq!(stored_htlc.immutables.maker, immutables.maker);
+		assert_eq!(stored_htlc.immutables.taker, immutables.taker);
+		assert_eq!(stored_htlc.immutables.timelocks, immutables.timelocks);
+
+		// verify deposited event
+		System::assert_last_event(
+			Event::HtlcWithdrawn {
+				htlc_id,
+				secret: secret.to_vec(),
+				amount: src_amount,
+				beneficiary: taker,
+				safety_deposit_recipient: third_party,
+			}
+			.into(),
+		);
+	});
+}
+
+#[test]
+fn create_swap_intent_then_dst_htlc_then_cancelled() {
+	new_test_ext().execute_with(|| {
+		// track events
+		System::set_block_number(1);
+
+		// initial setup
+		let maker = ALICE;
+		let taker = RESOLVER_BOB;
+
+		let src_amount = SRC_AMOUNT;
+		let dst_amount = DST_AMOUNT;
+		let dst_address = get_h160_addr(ALICE + 1000);
+		let nonce = 0;
+
+		let safety_deposit = SAFETY_DEPOSIT;
+
+		let current_block = 1u64;
+
+		let secret = b"tests_secret";
+		let hashlock = hash_of_word(secret);
+
+		// verify initial balances
+		assert_eq!(Balances::free_balance(&maker), 1000000);
+
+		// create immutables for the test
+		let swap_intent = create_swap_intent(
+			hashlock,
+			maker,
+			src_amount,
+			dst_amount,
+			dst_address,
+			current_block + 1000,
+			nonce,
+		);
+
+		////
+		// Stage 1: Create swap intent
+		assert_ok!(HtlcEscrow::create_swap_intent(
+			RuntimeOrigin::signed(maker),
+			swap_intent.clone(),
+		));
+
+		// verify reserved funds from the maker
+		assert_eq!(Balances::free_balance(&maker), 1000000 - src_amount);
+
+		// verify swap intent is stored correclty
+		let intent_key = HtlcEscrow::intent_key(&maker, nonce);
+		let stored_swap_intent =
+			SwapIntents::<Test>::get(&intent_key).expect("Swap intent id is contained; qed");
+
+		assert_eq!(stored_swap_intent.status, IntentStatus::Active);
+		assert_eq!(stored_swap_intent.intent.hashlock, swap_intent.hashlock);
+		assert_eq!(stored_swap_intent.intent.maker, swap_intent.maker);
+		assert_eq!(stored_swap_intent.intent.src_amount, swap_intent.src_amount);
+		assert_eq!(stored_swap_intent.intent.dst_amount, swap_intent.dst_amount);
+		assert_eq!(stored_swap_intent.intent.dst_address, swap_intent.dst_address);
+		assert_eq!(stored_swap_intent.intent.timeout_after_block, swap_intent.timeout_after_block);
+		assert_eq!(stored_swap_intent.intent.nonce, swap_intent.nonce);
+
+		// verify deposited event
+		System::assert_last_event(
+			Event::SwapIntentCreated {
+				maker,
+				nonce,
+				src_amount,
+				dst_amount,
+				dst_address,
+				hashlock,
+			}
+			.into(),
+		);
+
+		System::set_block_number(2);
+
+		let timelocks = create_timelocks(1);
+
+		////
+		// Stage 2: Taker creates SRC HTLC
+		assert_ok!(HtlcEscrow::create_src_htlc(
+			RuntimeOrigin::signed(taker),
+			maker,
+			nonce,
+			timelocks,
+			safety_deposit,
+		));
+
+		// verify reserved funds
+		assert_eq!(Balances::free_balance(&taker), 1000000 - safety_deposit);
+		assert_eq!(
+			Balances::balance_on_hold(&crate::HoldReason::SafetyDeposit.into(), &taker),
+			safety_deposit
+		);
+		assert_eq!(Balances::free_balance(&maker), 1000000 - src_amount);
+		assert_eq!(
+			Balances::balance_on_hold(&crate::HoldReason::MakerSwapIntentAmount.into(), &maker),
+			src_amount
+		);
+
+		let immutables = create_test_htlc_immutables(
+			intent_key,
+			hashlock,
+			maker,
+			taker,
+			src_amount,
+			safety_deposit,
+			1,
+		);
+
+		// verify HTLC is stored correclty
+		let htlc_id = HtlcEscrow::hash_immutables(&immutables);
+		let stored_htlc = Htlcs::<Test>::get(&htlc_id).expect("HTLC id is contained; qed");
+
+		assert_eq!(stored_htlc.status, HtlcStatus::Active);
+		assert_eq!(stored_htlc.htlc_type, HtlcType::Source);
+		assert_eq!(stored_htlc.immutables.timelocks.deployed_at, current_block);
+		assert_eq!(stored_htlc.immutables.amount, immutables.amount);
+		assert_eq!(stored_htlc.immutables.safety_deposit, immutables.safety_deposit);
+		assert_eq!(stored_htlc.immutables.maker, immutables.maker);
+		assert_eq!(stored_htlc.immutables.taker, immutables.taker);
+		assert_eq!(stored_htlc.immutables.timelocks, immutables.timelocks);
+
+		// verify deposited event
+		System::assert_last_event(
+			Event::HtlcCreated {
+				htlc_id,
+				hashlock: immutables.hashlock,
+				maker,
+				taker,
+				amount: src_amount,
+				safety_deposit,
+			}
+			.into(),
+		);
+
+		System::set_block_number(immutables.timelocks.withdrawal_after + 1);
+
+		// //
+		// Stage 3: Taker withdraws and receives safety_deposit and src_amount
+
+		// attempt early cancellation by `taker` should fail
+		assert_noop!(
+			HtlcEscrow::cancel(RuntimeOrigin::signed(taker), immutables.clone()),
+			Error::<Test>::EarlyCancellation,
+		);
+
+		System::set_block_number(immutables.timelocks.cancellation_after + 1);
+
+		assert_ok!(HtlcEscrow::cancel(RuntimeOrigin::signed(taker), immutables,));
+
+		// verify funds have been transfered correctly;
+		// the taker losses the safety_deposit which is taken by the third party
+		assert_eq!(Balances::free_balance(&taker), 1000000);
+		assert_eq!(Balances::balance_on_hold(&crate::HoldReason::SafetyDeposit.into(), &taker), 0);
+		assert_eq!(Balances::free_balance(&maker), 1000000);
+		assert_eq!(
+			Balances::balance_on_hold(&crate::HoldReason::MakerSwapIntentAmount.into(), &maker),
+			0
+		);
+
+		let immutables = create_test_htlc_immutables(
+			intent_key,
+			hashlock,
+			maker,
+			taker,
+			src_amount,
+			safety_deposit,
+			1,
+		);
+
+		// verify HTLC is stored correclty
+		let htlc_id = HtlcEscrow::hash_immutables(&immutables);
+		let stored_htlc = Htlcs::<Test>::get(&htlc_id).expect("HTLC id is contained; qed");
+
+		assert_eq!(stored_htlc.status, HtlcStatus::Cancelled);
+		assert_eq!(stored_htlc.htlc_type, HtlcType::Source);
+		assert_eq!(stored_htlc.immutables.timelocks.deployed_at, current_block);
+		assert_eq!(stored_htlc.immutables.amount, immutables.amount);
+		assert_eq!(stored_htlc.immutables.safety_deposit, immutables.safety_deposit);
+		assert_eq!(stored_htlc.immutables.maker, immutables.maker);
+		assert_eq!(stored_htlc.immutables.taker, immutables.taker);
+		assert_eq!(stored_htlc.immutables.timelocks, immutables.timelocks);
+
+		// verify deposited event
+		System::assert_last_event(Event::HtlcCancelled { htlc_id, refund_recipient: maker }.into());
 	});
 }
