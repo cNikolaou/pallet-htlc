@@ -25,7 +25,7 @@ pub mod pallet {
 	use frame_system::pallet_prelude::*;
 	use sp_core::{H160, H256};
 	use sp_io::hashing::blake2_256;
-	use sp_runtime::traits::{BlakeTwo256, Dispatchable, Hash, TrailingZeroInput};
+	use sp_runtime::traits::{BlakeTwo256, Dispatchable, Hash};
 	use sp_std::prelude::*;
 
 	pub type BalanceOf<T> = <<T as Config>::NativeBalance as fungible::Inspect<
@@ -192,6 +192,7 @@ pub mod pallet {
 			maker: T::AccountId,
 			taker: T::AccountId,
 			amount: BalanceOf<T>,
+			safety_deposit: BalanceOf<T>,
 		},
 		/// HTLC withdrawn.
 		HtlcWithdrawn {
@@ -279,12 +280,18 @@ pub mod pallet {
 
 		/// Intent does not already exists.
 		IntentDoesNotExists,
+
+		/// Intent is not active.
+		IntentNotActive,
+
+		/// Intent expired.
+		IntentExpired,
 	}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
 		///////
-		/// Calls for DST HTLCs
+		/// Calls for destination HTLCs
 
 		#[pallet::call_index(0)]
 		pub fn create_dst_htlc(
@@ -346,13 +353,14 @@ pub mod pallet {
 				maker: immutables.maker,
 				taker: immutables.taker,
 				amount: immutables.amount,
+				safety_deposit: updated_immutables.safety_deposit,
 			});
 
 			Ok(())
 		}
 
 		#[pallet::call_index(1)]
-		pub fn src_withdraw(
+		pub fn dst_withdraw(
 			origin: OriginFor<T>,
 			immutables: Immutables<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
 			secret: Vec<u8>,
@@ -431,7 +439,7 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(2)]
-		pub fn src_public_withdraw(
+		pub fn dst_public_withdraw(
 			origin: OriginFor<T>,
 			immutables: Immutables<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
 			secret: Vec<u8>,
@@ -520,7 +528,7 @@ pub mod pallet {
 		}
 
 		#[pallet::call_index(3)]
-		pub fn src_cancel(
+		pub fn dst_cancel(
 			origin: OriginFor<T>,
 			immutables: Immutables<T::AccountId, BalanceOf<T>, BlockNumberFor<T>>,
 		) -> DispatchResult {
@@ -549,7 +557,7 @@ pub mod pallet {
 				Error::<T>::EarlyCancellation
 			);
 
-			// Withdrawal phase
+			// Canellation phase
 
 			// release & transfer swap amount to maker
 			T::NativeBalance::release(
@@ -656,6 +664,80 @@ pub mod pallet {
 				dst_amount: stored_intent.intent.dst_amount,
 				dst_address: stored_intent.intent.dst_address,
 				hashlock: stored_intent.intent.hashlock,
+			});
+
+			Ok(())
+		}
+
+		///////
+		/// Calls for source HTLCs
+
+		#[pallet::call_index(6)]
+		pub fn create_src_htlc(
+			origin: OriginFor<T>,
+			maker: T::AccountId,
+			nonce: u64,
+			timelocks: Timelocks<BlockNumberFor<T>>,
+			safety_deposit: BalanceOf<T>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			// generate the key for the map and check it doesn't already exist
+			let intent_key = Self::intent_key(&maker, nonce);
+			let stored_intent =
+				SwapIntents::<T>::get(&intent_key).ok_or(Error::<T>::IntentDoesNotExists)?;
+
+			// ensure we cannot cancel an already cancelled intent
+			ensure!(stored_intent.status == IntentStatus::Active, Error::<T>::IntentNotActive);
+
+			// ensure the intent hasn't expired
+			let current_block = frame_system::Pallet::<T>::block_number();
+			ensure!(
+				current_block <= stored_intent.intent.timeout_after_block,
+				Error::<T>::IntentExpired
+			);
+
+			// validate timelock sequence (withdrawal < public_withdrawal < cancellation)
+			ensure!(
+				timelocks.deployed_at <= timelocks.cancellation_after &&
+					timelocks.withdrawal_after <= timelocks.public_withdrawal_after &&
+					timelocks.public_withdrawal_after <= timelocks.cancellation_after,
+				Error::<T>::InvalidTimelocks
+			);
+
+			let immutables = Immutables {
+				order_hash: intent_key,
+				hashlock: stored_intent.intent.hashlock,
+				maker: stored_intent.intent.maker.clone(),
+				taker: who.clone(),
+				amount: stored_intent.intent.src_amount,
+				safety_deposit,
+				timelocks,
+			};
+
+			// ensure HTLC doesn't already exist
+			let htlc_id = Self::hash_immutables(&immutables);
+			ensure!(!Htlcs::<T>::contains_key(&htlc_id), Error::<T>::HtlcAlreadyExists);
+
+			// hold the required safety deposit for the swap from the taker
+			T::NativeBalance::hold(
+				&HoldReason::SafetyDeposit.into(),
+				&who,
+				immutables.safety_deposit,
+			)
+			.map_err(|_| Error::<T>::InsufficientBalance)?;
+
+			let htlc = Htlc { immutables: immutables.clone(), status: HtlcStatus::Active };
+
+			Htlcs::<T>::insert(&htlc_id, &htlc);
+
+			Self::deposit_event(Event::HtlcCreated {
+				htlc_id,
+				hashlock: stored_intent.intent.hashlock,
+				maker: stored_intent.intent.maker,
+				taker: who,
+				amount: stored_intent.intent.src_amount,
+				safety_deposit,
 			});
 
 			Ok(())
