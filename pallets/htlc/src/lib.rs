@@ -52,7 +52,13 @@ pub mod pallet {
 			+ Dispatchable<RuntimeOrigin = Self::RuntimeOrigin>
 			+ GetDispatchInfo;
 
+		/// Reason for which funds are held.
 		type RuntimeHoldReason: From<HoldReason>;
+
+		/// Minimum safety deposit that should be kept when a resolver
+		/// creates a HTLC.
+		#[pallet::constant]
+		type MinSafetyDeposit: Get<BalanceOf<Self>>;
 	}
 
 	/// Reason options for held funds.
@@ -292,6 +298,9 @@ pub mod pallet {
 
 		/// Intent expired.
 		IntentExpired,
+
+		/// A higher value of a safety deposit is required.
+		HigherSafetyDepositRequired,
 	}
 
 	#[pallet::call]
@@ -309,6 +318,13 @@ pub mod pallet {
 
 			// ensure the taker creates the escrow
 			ensure!(who == immutables.taker, Error::<T>::InvalidCaller);
+
+			let min_safety_deposit: BalanceOf<T> = T::MinSafetyDeposit::get().into();
+
+			ensure!(
+				immutables.safety_deposit >= min_safety_deposit,
+				Error::<T>::HigherSafetyDepositRequired
+			);
 
 			let current_block = frame_system::Pallet::<T>::block_number();
 			let mut updated_immutables = immutables.clone();
@@ -773,6 +789,10 @@ pub mod pallet {
 			safety_deposit: BalanceOf<T>,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
+
+			let min_safety_deposit: BalanceOf<T> = T::MinSafetyDeposit::get().into();
+
+			ensure!(safety_deposit >= min_safety_deposit, Error::<T>::HigherSafetyDepositRequired);
 
 			// generate the key for the map and check it doesn't already exist
 			let intent_key = Self::intent_key(&maker, nonce);

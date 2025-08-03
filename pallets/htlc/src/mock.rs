@@ -86,6 +86,7 @@ impl pallet_htlc::Config for Test {
 	type NativeBalance = Balances;
 	type RuntimeCall = RuntimeCall;
 	type RuntimeHoldReason = RuntimeHoldReason;
+	type MinSafetyDeposit = ConstU128<10>;
 }
 
 pub fn new_test_ext() -> sp_io::TestExternalities {

@@ -179,6 +179,26 @@ fn withdraw_success_with_valid_secret() {
 			maker,
 			taker,
 			swap_amount,
+			5,
+			current_block,
+		);
+
+		// cannot create HTLC with low safe deposit
+		assert_noop!(
+			HtlcEscrow::create_dst_htlc(
+				RuntimeOrigin::signed(taker),
+				immutables.clone(),
+				src_cancellation_timestamp,
+			),
+			Error::<Test>::HigherSafetyDepositRequired
+		);
+
+		let immutables = create_test_htlc_immutables(
+			order_hash,
+			hashlock,
+			maker,
+			taker,
+			swap_amount,
 			safety_deposit,
 			current_block,
 		);

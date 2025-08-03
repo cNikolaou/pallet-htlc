@@ -170,6 +170,7 @@ impl pallet_htlc::Config for Runtime {
 	type NativeBalance = Balances;
 	type RuntimeCall = RuntimeCall;
 	type RuntimeHoldReason = RuntimeHoldReason;
+	type MinSafetyDeposit = ConstU128<50>;
 }
 
 parameter_types! {
